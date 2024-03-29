@@ -105,10 +105,11 @@ class Block(nn.Module):
         self.norm2 = nn.LayerNorm(n_embed, device=device)
 
     def forward(self, x):
-        x = x + self.multi_headed_attention(x) # B,T,H -> B,T,H
+        # This is the only part where order is changed compared to original paper
         x = self.norm1(x) # B,T,H
-        x = x + self.ff(x) # B,T,H -> B,T,H
+        x = x + self.multi_headed_attention(x) # B,T,H -> B,T,H
         x = self.norm2(x)
+        x = x + self.ff(x) # B,T,H -> B,T,H
         return x
     
 
@@ -131,14 +132,14 @@ class Transformer(nn.Module):
         # n_embed becomes the standard embedding size that controls multiple things, feels strange, need to think about this more
         self.token_embedding = nn.Embedding(vocab_size, n_embed, device=device)
         self.pos_embedding = nn.Embedding(block_size, n_embed, device=device)
-        self.blocks = nn.Sequential(Block(n_embed, n_heads), Block(n_embed, n_heads))
+        # Video added anotehr layer norm here, but why?
+        self.blocks = nn.Sequential(Block(n_embed, n_heads), Block(n_embed, n_heads), nn.LayerNorm(n_embed, device=device)
         self.fc = nn.Linear(n_embed, vocab_size, device=device)
 
     def forward(self, x, y=None):
         char_embedding_layer = self.token_embedding(x) # (Batch, Time, Channels) Time=word sequence, Channels=embed_size
         pos_embedding_layer = self.pos_embedding(torch.arange(block_size, device=device)) # (T, C)
         x = char_embedding_layer + pos_embedding_layer # B,T,C
-        # TODO: separate multi headed attention to a separate class, and see why I'm not reaching 3.2 in error
         x = self.blocks(x) # B,T,H
         logits = self.fc(x) # B,T,T @ B,T,H -> B,T,H
         # TODO: normalization
