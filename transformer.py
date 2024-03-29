@@ -8,7 +8,7 @@ from torch.nn import functional as F
 # TODO: what's the best way to manage conifg?
 torch.manual_seed(1337)
 learning_rate = 1e-3
-n_epochs= 10
+n_epochs= 20
 n_steps = 1000
 batch_size = 32
 block_size = 8
@@ -101,10 +101,14 @@ class Block(nn.Module):
         head_size = n_embed//n_heads
         self.multi_headed_attention = MultiHeadedAttention(n_embed, head_size, n_heads)
         self.ff = FeedForward(n_embed)
+        self.norm1 = nn.LayerNorm(n_embed, device=device)
+        self.norm2 = nn.LayerNorm(n_embed, device=device)
 
     def forward(self, x):
         x = x + self.multi_headed_attention(x) # B,T,H -> B,T,H
+        x = self.norm1(x) # B,T,H
         x = x + self.ff(x) # B,T,H -> B,T,H
+        x = self.norm2(x)
         return x
     
 
