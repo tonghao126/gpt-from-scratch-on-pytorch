@@ -1,5 +1,6 @@
 # move all code from transformer.ipynb to here
 import token
+from turtle import forward
 import torch
 import torch.nn as nn
 
@@ -9,11 +10,11 @@ learning_rate = 1e-3
 n_epochs= 10
 n_steps = 1000
 batch_size = 32
-block_size = 8
+block_size = 16
 device='cpu'
 n_embed = 32
 head_size = 8
-n_attentions = 8
+n_heads = 8
 
 with open('./data/raw/input.txt', 'r') as f:
     text = f.read()
@@ -79,7 +80,24 @@ class SelfAttention(nn.Module):
         weight = weight@v # B,T,T @ B,T,H -> B,T,H
         return weight
 
+class MultiHeadedAttention(nn.Module):
+    def __init__(self, n_embed, head_size, n_heads, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.attentions = nn.ModuleList([SelfAttention(n_embed, head_size) for i in range(n_heads)])
 
+    def forward(self, x):
+        return torch.cat([self.attentions[i](x) for i in range(n_heads)],dim=-1)
+
+class FeedForward(nn.Module):
+    def __init__(self, n_embed, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.ff = nn.Sequential(
+            nn.Linear(n_embed, n_embed, device=device),
+            nn.ReLU(),
+        )
+
+    def forward(self, x):
+        return self.ff(x)
 
 from torch.nn import functional as F
 # Bigram is just pairwise model
@@ -89,17 +107,18 @@ class Transformer(nn.Module):
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_size, n_embed, device=device)
         self.pos_embedding = nn.Embedding(block_size, n_embed, device=device)
-        # self.self_attention = SelfAttention(n_embed, head_size)
-        self.multi_head_attention = nn.ModuleList([SelfAttention(n_embed, head_size) for i in range(n_attentions)])
-        self.fc = nn.Linear(head_size*n_attentions, vocab_size, device=device)
+        self.multi_headed_attention = MultiHeadedAttention(n_embed, head_size, n_heads)
+        self.ff = FeedForward(head_size*n_heads)
+        self.fc = nn.Linear(head_size*n_heads, vocab_size, device=device)
 
     def forward(self, x, y=None):
         char_embedding_layer = self.token_embedding(x) # (Batch, Time, Channels) Time=word sequence, Channels=embed_size
         pos_embedding_layer = self.pos_embedding(torch.arange(block_size, device=device)) # (T, C)
         x = char_embedding_layer + pos_embedding_layer
         # TODO: separate multi headed attention to a separate class, and see why I'm not reaching 3.2 in error
-        weight = torch.cat([self.multi_head_attention[i](x) for i in range(n_attentions)],dim=-1) # B,T,H*N_attentions -> B,T,H*N_attentions
-        logits = self.fc(weight) # B,T,T @ B,T,H -> B,T,H
+        x = self.multi_headed_attention(x) # B,T,H*n_heads -> B,T,H*n_heads
+        x = self.ff(x) # B,T,H*n_heads -> B,T,H*n_heads
+        logits = self.fc(x) # B,T,T @ B,T,H -> B,T,H
         # TODO: normalization
         
         # When generating, y is None
@@ -142,5 +161,5 @@ for epoch in range(n_epochs):
     print(f"""Epoch {epoch}, Loss: {loss.item()}, running_train_loss: {epoch_eval['train']}, running_eval_loss: {epoch_eval['eval']}""")
 
 # add device and see difference?
-print(decoder(model.generate(torch.zeros(1, 8, dtype=torch.long), max_tokens=500).tolist()[0]))
+print(decoder(model.generate(torch.zeros(1, block_size, dtype=torch.long), max_tokens=500).tolist()[0]))
 
