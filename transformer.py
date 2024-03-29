@@ -3,6 +3,7 @@ import token
 from turtle import forward
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
 
 # TODO: what's the best way to manage conifg?
 torch.manual_seed(1337)
@@ -10,7 +11,7 @@ learning_rate = 1e-3
 n_epochs= 10
 n_steps = 1000
 batch_size = 32
-block_size = 16
+block_size = 8
 device='cpu'
 n_embed = 32
 head_size = 8
@@ -99,25 +100,38 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.ff(x)
 
-from torch.nn import functional as F
-# Bigram is just pairwise model
-# TODO: take self attention out as its own class
+    
+class Block(nn.Module):
+    # Interesting in the video, think about this as communication -> computation rinse and repeat
+    
+    def __init__(self, n_embed, n_heads) -> None:
+        super().__init__()
+        # this is to make sure input and output of this block has the same size so that it can be stacked
+        head_size = n_embed//n_heads
+        self.multi_headed_attention = MultiHeadedAttention(n_embed, head_size, n_heads)
+        self.ff = FeedForward(n_embed)
+
+    def forward(self, x):
+        x = self.multi_headed_attention(x) # B,T,H -> B,T,H
+        x = self.ff(x) # B,T,H -> B,T,H
+        return x
+
+
 class Transformer(nn.Module):
     def __init__(self, vocab_size) -> None:
         super().__init__()
+        # n_embed becomes the standard embedding size that controls multiple things, feels strange, need to think about this more
         self.token_embedding = nn.Embedding(vocab_size, n_embed, device=device)
         self.pos_embedding = nn.Embedding(block_size, n_embed, device=device)
-        self.multi_headed_attention = MultiHeadedAttention(n_embed, head_size, n_heads)
-        self.ff = FeedForward(head_size*n_heads)
-        self.fc = nn.Linear(head_size*n_heads, vocab_size, device=device)
+        self.blocks = nn.Sequential(Block(n_embed, n_heads), Block(n_embed, n_heads))
+        self.fc = nn.Linear(n_embed, vocab_size, device=device)
 
     def forward(self, x, y=None):
         char_embedding_layer = self.token_embedding(x) # (Batch, Time, Channels) Time=word sequence, Channels=embed_size
         pos_embedding_layer = self.pos_embedding(torch.arange(block_size, device=device)) # (T, C)
-        x = char_embedding_layer + pos_embedding_layer
+        x = char_embedding_layer + pos_embedding_layer # B,T,C
         # TODO: separate multi headed attention to a separate class, and see why I'm not reaching 3.2 in error
-        x = self.multi_headed_attention(x) # B,T,H*n_heads -> B,T,H*n_heads
-        x = self.ff(x) # B,T,H*n_heads -> B,T,H*n_heads
+        x = self.blocks(x) # B,T,H
         logits = self.fc(x) # B,T,T @ B,T,H -> B,T,H
         # TODO: normalization
         
@@ -147,6 +161,7 @@ model = Transformer(vocab_size)
 out, loss = model(x, y)
 optimizer = torch.optim.AdamW(model.parameters(),lr=learning_rate)
 
+print(model.parameters)
 
 # TODO: understand better here, does the order matter?
 print("using device", x.device)
