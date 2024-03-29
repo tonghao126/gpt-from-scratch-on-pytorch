@@ -85,21 +85,12 @@ class MultiHeadedAttention(nn.Module):
     def __init__(self, n_embed, head_size, n_heads, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.attentions = nn.ModuleList([SelfAttention(n_embed, head_size) for i in range(n_heads)])
+        self.linear = nn.Linear(n_heads*head_size, n_embed, device=device) #n_heads*head_size = n_embed
 
     def forward(self, x):
-        return torch.cat([self.attentions[i](x) for i in range(n_heads)],dim=-1)
-
-class FeedForward(nn.Module):
-    def __init__(self, n_embed, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.ff = nn.Sequential(
-            nn.Linear(n_embed, n_embed, device=device),
-            nn.ReLU(),
-        )
-
-    def forward(self, x):
-        return self.ff(x)
-
+        x = torch.cat([self.attentions[i](x) for i in range(n_heads)],dim=-1)
+        x = self.linear(x)
+        return x
     
 class Block(nn.Module):
     # Interesting in the video, think about this as communication -> computation rinse and repeat
@@ -112,9 +103,22 @@ class Block(nn.Module):
         self.ff = FeedForward(n_embed)
 
     def forward(self, x):
-        x = self.multi_headed_attention(x) # B,T,H -> B,T,H
-        x = self.ff(x) # B,T,H -> B,T,H
+        x = x + self.multi_headed_attention(x) # B,T,H -> B,T,H
+        x = x + self.ff(x) # B,T,H -> B,T,H
         return x
+    
+
+class FeedForward(nn.Module):
+    def __init__(self, n_embed, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.ff = nn.Sequential(
+            nn.Linear(n_embed, n_embed*4, device=device),
+            nn.ReLU(),
+            nn.Linear(n_embed*4, n_embed, device=device)
+        )
+
+    def forward(self, x):
+        return self.ff(x)
 
 
 class Transformer(nn.Module):
@@ -161,7 +165,7 @@ model = Transformer(vocab_size)
 out, loss = model(x, y)
 optimizer = torch.optim.AdamW(model.parameters(),lr=learning_rate)
 
-print(model.parameters)
+# print(model.parameters)
 
 # TODO: understand better here, does the order matter?
 print("using device", x.device)
