@@ -8,14 +8,18 @@ from torch.nn import functional as F
 # TODO: what's the best way to manage conifg?
 torch.manual_seed(1337)
 learning_rate = 1e-3
-n_epochs= 20
+n_epochs= 10
 n_steps = 1000
 batch_size = 32
 block_size = 8
 device='cpu'
 n_embed = 32
 head_size = 8
-n_heads = 8
+n_heads = n_embed//head_size
+n_blocks = 3
+# Accoridng to paper, output of each sub-layer, before it is added to the
+# sub-layer input and normalized. In addition, we apply dropout to the sums of the embeddings and the positional encodings
+dropout = 0.1
 
 with open('./data/raw/input.txt', 'r') as f:
     text = f.read()
@@ -65,7 +69,8 @@ class SelfAttention(nn.Module):
         self.key = nn.Linear(n_embed, head_size, device=device)
         self.query = nn.Linear(n_embed, head_size, device=device)
         self.value = nn.Linear(n_embed, head_size, device=device)
-        
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, x):
         k = self.key(x)
         q = self.query(x)
@@ -78,6 +83,7 @@ class SelfAttention(nn.Module):
         tri = torch.tril(torch.ones(block_size,block_size, device=device))
         weight = weight.masked_fill(tri==0, float('-inf'))
         weight = torch.softmax(weight, dim=-1)
+        weight = self.dropout(weight)
         weight = weight@v # B,T,T @ B,T,H -> B,T,H
         return weight
 
@@ -86,10 +92,12 @@ class MultiHeadedAttention(nn.Module):
         super().__init__(*args, **kwargs)
         self.attentions = nn.ModuleList([SelfAttention(n_embed, head_size) for i in range(n_heads)])
         self.linear = nn.Linear(n_heads*head_size, n_embed, device=device) #n_heads*head_size = n_embed
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         x = torch.cat([self.attentions[i](x) for i in range(n_heads)],dim=-1)
         x = self.linear(x)
+        x = self.dropout(x)
         return x
     
 class Block(nn.Module):
@@ -119,7 +127,8 @@ class FeedForward(nn.Module):
         self.ff = nn.Sequential(
             nn.Linear(n_embed, n_embed*4, device=device),
             nn.ReLU(),
-            nn.Linear(n_embed*4, n_embed, device=device)
+            nn.Linear(n_embed*4, n_embed, device=device),
+            nn.Dropout(dropout)
         )
 
     def forward(self, x):
@@ -133,13 +142,15 @@ class Transformer(nn.Module):
         self.token_embedding = nn.Embedding(vocab_size, n_embed, device=device)
         self.pos_embedding = nn.Embedding(block_size, n_embed, device=device)
         # Video added anotehr layer norm here, but why?
-        self.blocks = nn.Sequential(Block(n_embed, n_heads), Block(n_embed, n_heads), nn.LayerNorm(n_embed, device=device)
+        self.blocks = nn.Sequential(*[Block(n_embed, n_heads) for i in range(n_blocks)], nn.LayerNorm(n_embed, device=device))
         self.fc = nn.Linear(n_embed, vocab_size, device=device)
+        self.dropout = nn.Dropout(dropout) 
 
     def forward(self, x, y=None):
         char_embedding_layer = self.token_embedding(x) # (Batch, Time, Channels) Time=word sequence, Channels=embed_size
         pos_embedding_layer = self.pos_embedding(torch.arange(block_size, device=device)) # (T, C)
         x = char_embedding_layer + pos_embedding_layer # B,T,C
+        x = self.dropout(x)
         x = self.blocks(x) # B,T,H
         logits = self.fc(x) # B,T,T @ B,T,H -> B,T,H
         # TODO: normalization
