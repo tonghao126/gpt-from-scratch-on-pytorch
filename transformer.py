@@ -7,15 +7,15 @@ from torch.nn import functional as F
 
 # TODO: what's the best way to manage conifg?
 torch.manual_seed(1337)
-learning_rate = 1e-3
-n_epochs= 10
+learning_rate = 5e-4
+n_epochs= 5
 n_steps = 1000
-batch_size = 32
-block_size = 8
-device='cpu'
-n_embed = 32
-head_size = 8
-n_heads = n_embed//head_size
+batch_size = 64
+block_size = 64
+device='mps'
+n_embed = 384
+n_heads = 8
+head_size = n_embed//n_heads
 n_blocks = 3
 # Accoridng to paper, output of each sub-layer, before it is added to the
 # sub-layer input and normalized. In addition, we apply dropout to the sums of the embeddings and the positional encodings
@@ -196,5 +196,5 @@ for epoch in range(n_epochs):
     print(f"""Epoch {epoch}, Loss: {loss.item()}, running_train_loss: {epoch_eval['train']}, running_eval_loss: {epoch_eval['eval']}""")
 
 # add device and see difference?
-print(decoder(model.generate(torch.zeros(1, block_size, dtype=torch.long), max_tokens=500).tolist()[0]))
+print(decoder(model.generate(torch.zeros(1, block_size, dtype=torch.long, device=device), max_tokens=500).tolist()[0]))
 
