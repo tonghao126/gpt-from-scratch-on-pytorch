@@ -1,25 +1,18 @@
 # move all code from transformer.ipynb to here
-import token
 from turtle import forward
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from src.utils.config import Config
+#read in yaml file
+import yaml
+import IPython.core.ultratb
+import sys
+sys.excepthook = IPython.core.ultratb.ColorTB()
 
-# TODO: what's the best way to manage conifg?
-torch.manual_seed(1337)
-learning_rate = 5e-4
-n_epochs= 5
-n_steps = 1000
-batch_size = 64
-block_size = 64
-device='mps'
-n_embed = 384
-n_heads = 8
-head_size = n_embed//n_heads
-n_blocks = 3
-# Accoridng to paper, output of each sub-layer, before it is added to the
-# sub-layer input and normalized. In addition, we apply dropout to the sums of the embeddings and the positional encodings
-dropout = 0.1
+
+config = Config()
+test = yaml.load(open('./config/default_config.yaml', 'r'), Loader=yaml.FullLoader)
 
 with open('./data/raw/input.txt', 'r') as f:
     text = f.read()
@@ -33,7 +26,7 @@ encoder = lambda x: [encode_mapping[s] for s in x]
 decoder = lambda x: ''.join([decode_mapping[s] for s in x])
 
 # Not sure why but for the Bigram mps is significantly slower than cpu
-data = torch.tensor(encoder(text), dtype=torch.long, device=device)
+data = torch.tensor(encoder(text), dtype=torch.long, device=config.device)
 
 # train test split
 n = int(0.9*len(data))
@@ -41,12 +34,10 @@ train = data[:n]
 test = data[n:]
 
 def get_batch(data, batch_size):
-    data_slice = torch.randint(0, len(data)-block_size, (batch_size,))
-    x = torch.stack([data[i:i+block_size] for i in data_slice])
-    y = torch.stack([data[i+1:i+block_size+1] for i in data_slice])
+    data_slice = torch.randint(0, len(data)-config.block_size, (batch_size,))
+    x = torch.stack([data[i:i+config.block_size] for i in data_slice])
+    y = torch.stack([data[i+1:i+config.block_size+1] for i in data_slice])
     return  x, y
-
-x, y = get_batch(train, batch_size)
 
 @torch.no_grad()
 def running_loss():
@@ -64,23 +55,26 @@ def running_loss():
     return out
 
 class SelfAttention(nn.Module):
-    def __init__(self, n_embed, head_size) -> None:
+    def __init__(self, n_embed, head_size, device, dropout, block_size) -> None:
         super().__init__()
         self.key = nn.Linear(n_embed, head_size, device=device)
         self.query = nn.Linear(n_embed, head_size, device=device)
         self.value = nn.Linear(n_embed, head_size, device=device)
         self.dropout = nn.Dropout(dropout)
+        self.block_size = block_size
+        self.device = device
+        self.head_size = head_size
 
     def forward(self, x):
         k = self.key(x)
         q = self.query(x)
         v = self.value(x)
         # Weight is the key to self attention mechanism, essentially which previous key is more relevant to current k
-        weight = q@k.transpose(-2,-1)* head_size**-0.5 # B,T,H @ B,H,T -> B,T,T
+        weight = q@k.transpose(-2,-1)* self.head_size**-0.5 # B,T,H @ B,H,T -> B,T,T
 
         # apply triangle mask, note the order of things. I.e. when to apply mask, softmax and multply by v at the end
         # TODO: the implementation here is different from Andrej's, would this screw things up downstream?
-        tri = torch.tril(torch.ones(block_size,block_size, device=device))
+        tri = torch.tril(torch.ones(self.block_size,self.block_size, device=self.device))
         weight = weight.masked_fill(tri==0, float('-inf'))
         weight = torch.softmax(weight, dim=-1)
         weight = self.dropout(weight)
@@ -88,41 +82,22 @@ class SelfAttention(nn.Module):
         return weight
 
 class MultiHeadedAttention(nn.Module):
-    def __init__(self, n_embed, head_size, n_heads, *args, **kwargs) -> None:
+    def __init__(self, n_embed, head_size, n_heads, device, dropout, block_size, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.attentions = nn.ModuleList([SelfAttention(n_embed, head_size) for i in range(n_heads)])
+        self.attentions = nn.ModuleList([SelfAttention(n_embed, head_size, device, dropout, block_size) for i in range(n_heads)])
         self.linear = nn.Linear(n_heads*head_size, n_embed, device=device) #n_heads*head_size = n_embed
         self.dropout = nn.Dropout(dropout)
+        self.n_heads = n_heads
 
     def forward(self, x):
-        x = torch.cat([self.attentions[i](x) for i in range(n_heads)],dim=-1)
+        x = torch.cat([self.attentions[i](x) for i in range(self.n_heads)],dim=-1)
         x = self.linear(x)
         x = self.dropout(x)
         return x
     
-class Block(nn.Module):
-    # Interesting in the video, think about this as communication -> computation rinse and repeat
-    
-    def __init__(self, n_embed, n_heads) -> None:
-        super().__init__()
-        # this is to make sure input and output of this block has the same size so that it can be stacked
-        head_size = n_embed//n_heads
-        self.multi_headed_attention = MultiHeadedAttention(n_embed, head_size, n_heads)
-        self.ff = FeedForward(n_embed)
-        self.norm1 = nn.LayerNorm(n_embed, device=device)
-        self.norm2 = nn.LayerNorm(n_embed, device=device)
-
-    def forward(self, x):
-        # This is the only part where order is changed compared to original paper
-        x = self.norm1(x) # B,T,H
-        x = x + self.multi_headed_attention(x) # B,T,H -> B,T,H
-        x = self.norm2(x)
-        x = x + self.ff(x) # B,T,H -> B,T,H
-        return x
-    
 
 class FeedForward(nn.Module):
-    def __init__(self, n_embed, *args, **kwargs) -> None:
+    def __init__(self, n_embed, device, dropout, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.ff = nn.Sequential(
             nn.Linear(n_embed, n_embed*4, device=device),
@@ -133,28 +108,49 @@ class FeedForward(nn.Module):
 
     def forward(self, x):
         return self.ff(x)
+    
+
+class Block(nn.Module):
+    # Interesting in the video, think about this as communication -> computation rinse and repeat
+    
+    def __init__(self, n_embed, n_heads, device, dropout, block_size, *args, **kwargs) -> None:
+        super().__init__()
+        # this is to make sure input and output of this block has the same size so that it can be stacked
+        head_size = n_embed//n_heads
+        self.multi_headed_attention = MultiHeadedAttention(n_embed, head_size, n_heads, device, dropout, block_size)
+        self.ff = FeedForward(n_embed, device, dropout)
+        self.norm1 = nn.LayerNorm(n_embed, device=device)
+        self.norm2 = nn.LayerNorm(n_embed, device=device)
+
+    def forward(self, x):
+        # This is the only part where order is changed compared to original paper
+        x = self.norm1(x) # B,T,H
+        x = x + self.multi_headed_attention(x) # B,T,H -> B,T,H
+        x = self.norm2(x)
+        x = x + self.ff(x) # B,T,H -> B,T,H
+        return x
 
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size) -> None:
+    def __init__(self, vocab_size, config) -> None:
         super().__init__()
+        self.config = config
         # n_embed becomes the standard embedding size that controls multiple things, feels strange, need to think about this more
-        self.token_embedding = nn.Embedding(vocab_size, n_embed, device=device)
-        self.pos_embedding = nn.Embedding(block_size, n_embed, device=device)
+        self.token_embedding = nn.Embedding(vocab_size, self.config.n_embed, device=self.config.device)
+        self.pos_embedding = nn.Embedding(self.config.block_size, self.config.n_embed, device=self.config.device)
         # Video added anotehr layer norm here, but why?
-        self.blocks = nn.Sequential(*[Block(n_embed, n_heads) for i in range(n_blocks)], nn.LayerNorm(n_embed, device=device))
-        self.fc = nn.Linear(n_embed, vocab_size, device=device)
-        self.dropout = nn.Dropout(dropout) 
+        self.blocks = nn.Sequential(*[Block(**self.config.__dict__) for i in range(self.config.n_blocks)], nn.LayerNorm(self.config.n_embed, device=self.config.device))
+        self.fc = nn.Linear(self.config.n_embed, vocab_size, device=self.config.device)
+        self.dropout = nn.Dropout(self.config.dropout) 
 
     def forward(self, x, y=None):
         char_embedding_layer = self.token_embedding(x) # (Batch, Time, Channels) Time=word sequence, Channels=embed_size
-        pos_embedding_layer = self.pos_embedding(torch.arange(block_size, device=device)) # (T, C)
+        pos_embedding_layer = self.pos_embedding(torch.arange(self.config.block_size, device=self.config.device)) # (T, C)
         x = char_embedding_layer + pos_embedding_layer # B,T,C
         x = self.dropout(x)
         x = self.blocks(x) # B,T,H
         logits = self.fc(x) # B,T,T @ B,T,H -> B,T,H
-        # TODO: normalization
-        
+
         # When generating, y is None
         if y is None:
             loss=None
@@ -177,17 +173,16 @@ class Transformer(nn.Module):
             x = torch.cat([x, next_tokens], dim=1)
         return x
     
-model = Transformer(vocab_size)
-out, loss = model(x, y)
-optimizer = torch.optim.AdamW(model.parameters(),lr=learning_rate)
+
+model = Transformer(vocab_size, config)
+optimizer = torch.optim.AdamW(model.parameters(),lr=config.learning_rate)
 
 # print(model.parameters)
 
 # TODO: understand better here, does the order matter?
-print("using device", x.device)
-for epoch in range(n_epochs):
-    for _ in range(n_steps):
-        x, y = get_batch(train, batch_size)
+for epoch in range(config.n_epochs):
+    for _ in range(config.n_steps):
+        x, y = get_batch(train, config.batch_size)
         _, loss = model(x, y)
         optimizer.zero_grad()
         loss.backward()
