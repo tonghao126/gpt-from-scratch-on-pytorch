@@ -1,7 +1,5 @@
 # move all code from transformer.ipynb to here
 import torch
-import torch.nn as nn
-from torch.nn import functional as F
 from src.utils.config import Config
 #read in yaml file
 import yaml
@@ -49,5 +47,7 @@ for epoch in range(config.n_epochs):
     print(f"""Epoch {epoch}, Loss: {loss.item()}, running_train_loss: {epoch_eval['train']}, running_eval_loss: {epoch_eval['eval']}""")
 
 # add device and see difference?
-print(decoder(model.generate(torch.zeros(1, config.block_size, dtype=torch.long, device=config.device), max_tokens=500).tolist()[0]))
+result = decoder(model.generate(torch.zeros(1, config.block_size, dtype=torch.long, device=config.device), max_tokens=500).tolist()[0])
+
+print(f'result is {result}')
 

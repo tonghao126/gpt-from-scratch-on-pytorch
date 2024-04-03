@@ -151,5 +151,6 @@ class Transformer(nn.Module):
             generated = logits[:, -1, :]  # B,C
             probs = nn.Softmax(dim=-1)(generated)
             next_tokens = torch.multinomial(probs, 1)
-            x = torch.cat([x, next_tokens], dim=1)
-        return x
+            x = torch.cat([x, next_tokens], dim=1) # B, T
+        # so as to not including input matrix
+        return x[:, -max_tokens:]
