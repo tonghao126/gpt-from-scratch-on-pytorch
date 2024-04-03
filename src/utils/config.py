@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 
 @dataclass
 class Config:
@@ -20,4 +20,7 @@ class Config:
 
     def __post_init__(self):
         self.head_size:int = self.n_embed//self.n_heads
+
+    def to_dict(self):
+        return asdict(self)
 
